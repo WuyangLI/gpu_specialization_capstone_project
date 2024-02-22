@@ -117,7 +117,7 @@ __global__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float
     const float alpha = 1.0f;
     const float beta = 0.0f;
     cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, hidden, pixel_len, &alpha, d_x, batch_size, d_w1, pixel_len, &beta, d_s, batch_size);
-    reluKernel(d_s, d_z, batch_size * hidden_size);
+    reluKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_s, d_z, batch_size * hidden_size);
     cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, class_num, hidden_size, &alpha, d_z, batch_size, d_w2, hidden_size, &beta, d_p, batch_size);
 }
 
@@ -134,12 +134,12 @@ __global__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, 
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
-    elementWiseNegativeDivideKernel(d_y, d_p, d_dp, batch_size * class_num);
+    elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
     cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, batch_size, class_num, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, class_num, &beta, d_dz, batch_size);
-    reluDerivativeKernel(d_z, d_dz, batch_size * hidden_size);
-    elementWiseMultiplyKernel(d_dz, d_dz, d_ds, batch_size * hidden_size);
-    cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, pxiel_len, d_ds, batch_size, &beta, d_dw1, pixel_len);
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
+    reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_dz, batch_size * hidden_size);
+    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_dz, d_ds, batch_size * hidden_size);
+    cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
     /*
     update d_w1 and d_w2
     d_w1 = d_w1 + lr * d_dw1
@@ -238,7 +238,7 @@ __host__ float test_accuracy(float* h_y, float* h_p, int test_batch_size, int cl
             }
         }
         // check if the respective element in ground-truth is 1.
-        if (h_y[max_prob_index] > 0.99) {
+        if (h_y[max_prob_index] > 0.999) {
             correct_num++;
         }
     }
@@ -252,7 +252,7 @@ int main()
     // train batch size
     int batch_size = 6000;
     // test batch size
-    int test_batch_size = ?;
+    int test_batch_size = 1000;
     // Image pixels
     int pixel_len = 28 * 28;
     // Number of classes
@@ -261,7 +261,7 @@ int main()
     int hidden_size = 512;
     // number of epochs
     int epoch_num = 10;
-    const float learning_rate = 0.0001;
+    const float learning_rate = 0.001;
 
     // create handle for cublas
     cublasHandle_t handle;
@@ -329,6 +329,8 @@ int main()
     delete[] h_test_image;
     delete[] h_test_label;
     delete[] h_test_p;
+    cudaFreeHost(h_w1);
+    cudaFreeHost(h_w2);
     cudaFree(d_test_x);
     cudaFree(d_test_s);
     cudaFree(d_test_z);
