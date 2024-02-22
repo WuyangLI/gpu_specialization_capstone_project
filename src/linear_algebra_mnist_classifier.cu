@@ -3,16 +3,18 @@
 #include <sstream>
 #include <string>
 #include <random>
+#include <tuple>
 #include <cmath>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <cublas_v2.h>
 
 #define BLOCK_SIZE 256
 #define NUM_BLOCKS 3
 
 // Function to load array from file
-__host__ float *loadArrayFromFile(const char *filename, int &rows, int &cols)
+__host__ float *loadArrayFromFile(const char* filename, int &rows, int &cols)
 {
     // Allocate memory for the array
     float *array = new float[rows * cols];
@@ -49,11 +51,11 @@ __host__ float *loadArrayFromFile(const char *filename, int &rows, int &cols)
 __host__ std::tuple<float *, float *> loadImageAndLabel(std::string dataset, int batch_size, int pixels_length, int class_num)
 {
     // dataset is either "train" or "t10k"
-    std::string image_data_path = dataset + "-images.idx3-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(pixels_length);
-    std::string label_data_path = dataset + "-labels.idx1-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(class_num);
-    float *host_image = loadArrayFromFile(image_data_path, batch_size, pixels_length);
-    float *host_label = loadArrayFromFile(label_data_path, batch_size, class_num);
-    return {host_image, host_label};
+    std::string image_data_path = dataset + "-images.idx3-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(pixels_length) + ".txt";
+    std::string label_data_path = dataset + "-labels.idx1-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(class_num) + ".txt";
+    float *host_image = loadArrayFromFile(image_data_path.c_str(), batch_size, pixels_length);
+    float *host_label = loadArrayFromFile(label_data_path.c_str(), batch_size, class_num);
+    return std::make_tuple(host_image, host_label);
 }
 
 // kernels for element-wise operations
@@ -107,7 +109,7 @@ __global__ void logKernel(float *d_A, int n)
     }
 }
 
-__global__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float *d_s, float *d_z, float *d_w2, float *d_p, int batch_size, int pixel_len, int hidden_size, int class_num)
+__host__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float *d_s, float *d_z, float *d_w2, float *d_p, int batch_size, int pixel_len, int hidden_size, int class_num)
 {
     /*
      d_s = d_x * d_w1
@@ -116,12 +118,12 @@ __global__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float
      */
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, hidden, pixel_len, &alpha, d_x, batch_size, d_w1, pixel_len, &beta, d_s, batch_size);
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, hidden_size, pixel_len, &alpha, d_x, batch_size, d_w1, pixel_len, &beta, d_s, batch_size);
     reluKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_s, d_z, batch_size * hidden_size);
     cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, class_num, hidden_size, &alpha, d_z, batch_size, d_w2, hidden_size, &beta, d_p, batch_size);
 }
 
-__global__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_p, float *d_dp, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
+__host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_p, float *d_dp, float *d_y, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
 {
     /*
     calculate d_dw2 and d_dw1
@@ -149,17 +151,17 @@ __global__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, 
     cublasSaxpy(handle, hidden_size * class_num, &learning_rate, d_dw2, 1, d_w2, 1);
 }
 
-__host__ std::tuple<ffloat *, float *> allocateHostMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
+__host__ std::tuple<float *, float *> allocateHostMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
 {
     float *h_w1, *h_w2;
     size_t size_w1 = pixel_len * hidden_size * sizeof(float);
     size_t size_w2 = hidden_size * class_num * sizeof(float);
     cudaMallocHost(&h_w1, size_w1);
     cudaMallocHost(&h_w2, size_w2);
-    return {h_w1, h_w2};
+    return std::make_tuple(h_w1, h_w2);
 }
 
-__host__ std::tuple<float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *> allocateDeviceMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
+__host__ std::tuple<float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *> allocateDeviceMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
 {
     // model weights and their derivative matrix
     float *d_w1, *d_w2, *d_dw1, *d_dw2;
@@ -172,7 +174,7 @@ __host__ std::tuple<float *, float *, float *, float *, float *, float *, float 
     cudaMalloc(&d_dw2, size_w2);
 
     // input, output, intermediate matrix and their derivative
-    float *d_x, *d_s, *d_ds, *d_z, *d_dz, *d_p, *d_dp, d_y;
+    float *d_x, *d_s, *d_ds, *d_z, *d_dz, *d_p, *d_dp, *d_y;
     size_t size_x = batch_size * pixel_len * sizeof(float);
     size_t size_s = batch_size * hidden_size * sizeof(float);
     size_t size_z = batch_size * hidden_size * sizeof(float);
@@ -188,13 +190,13 @@ __host__ std::tuple<float *, float *, float *, float *, float *, float *, float 
     cudaMalloc(&d_dp, size_p);
     cudaMalloc(&d_y, size_y);
 
-    return {d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y};
+    return std::make_tuple(d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y);
 }
 
 __host__ std::tuple<float *, float *, float *, float *> allocateTestDeviceMemory(int test_batch_size, int pixel_len, int hidden_size, int class_num)
 {
     // input, output, intermediate matrix and their derivative
-    float *d_x, *d_s, *d_ds, *d_z, *d_dz, *d_p, *d_dp, d_y;
+    float *d_x, *d_s, *d_z, *d_p;
     size_t size_x = test_batch_size * pixel_len * sizeof(float);
     size_t size_s = test_batch_size * hidden_size * sizeof(float);
     size_t size_z = test_batch_size * hidden_size * sizeof(float);
@@ -205,7 +207,7 @@ __host__ std::tuple<float *, float *, float *, float *> allocateTestDeviceMemory
     cudaMalloc(&d_z, size_z);
     cudaMalloc(&d_p, size_p);
 
-    return {d_x, d_s, d_z, d_p};
+    return std::make_tuple(d_x, d_s, d_z, d_p);
 }
 
 void xavier_weight_init(int n, float* h_w, int s) {
@@ -296,12 +298,12 @@ int main()
     for (int i = 0; i < epoch_num; i++)
     {
         forwarPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
-        backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, batch_size, pixel_len, hidden_size, class_num, learning_rate);
+        backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, learning_rate);
     }
 
     // Free the allocated memory for training
-    delete[] host_train_image;
-    delete[] host_train_label;
+    delete[] h_train_image;
+    delete[] h_train_label;
     cudaFree(d_dw1);
     cudaFree(d_dw2);
     cudaFree(d_x);
