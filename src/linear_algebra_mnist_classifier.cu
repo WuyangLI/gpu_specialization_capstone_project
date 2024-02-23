@@ -262,13 +262,14 @@ int main()
     // Hidden size of first MLP
     int hidden_size = 512;
     // number of epochs
-    int epoch_num = 10;
-    const float learning_rate = 0.001;
+    int epoch_num = 100;
+    const float learning_rate = 0.0001;
 
     // create handle for cublas
     cublasHandle_t handle;
     cublasCreate(&handle);
 
+    std::cout << "load train and test files" << std::endl;
     auto [h_train_image, h_train_label] = loadImageAndLabel("train", batch_size, pixel_len, class_num);
     auto [h_test_image, h_test_label] = loadImageAndLabel("t10k", test_batch_size, pixel_len, class_num);
 
@@ -278,29 +279,37 @@ int main()
         return 1;
     }
 
+    std::cout << "allocate host memory for training model" << std::endl;
     // allocate host memory for model training
     auto [h_w1, h_w2]  = allocateHostMemory(batch_size, pixel_len, hidden_size, class_num);
 
+    std::cout << "allocate device memory for training model" << std::endl;
     // allocate device memory for model training
     auto [d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y] = allocateDeviceMemory(batch_size, pixel_len, hidden_size, class_num);
 
+    std::cout << "initialize weights and copy to device" << std::endl;
     // initialize weights and copy to device
     xavier_weight_init(pixel_len, h_w1, pixel_len * hidden_size);
     xavier_weight_init(hidden_size, h_w2, hidden_size * class_num);
     cudaMemcpy(d_w1, h_w1, pixel_len * hidden_size *sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_w2, h_w2, hidden_size * class_num * sizeof(float), cudaMemcpyHostToDevice);
 
+    std::cout << "copy images and labels to device" << std::endl;
     // copy images and labels to device
     cudaMemcpy(d_x, h_train_image, batch_size * pixel_len * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, h_train_label, batch_size * class_num * sizeof(float), cudaMemcpyHostToDevice);
 
+    std::cout << "train the model" << std::endl;
     // Train the model
     for (int i = 0; i < epoch_num; i++)
     {
+        std::cout << "epoch: " << epoch_num << " forwarPass" << std::endl;
         forwarPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
+        std::cout << "epoch: " << epoch_num << " backPropagate" << std::endl;
         backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, learning_rate);
     }
-
+    
+    std::cout << "free the allocated memory for training" << std::endl;
     // Free the allocated memory for training
     delete[] h_train_image;
     delete[] h_train_label;
@@ -315,14 +324,18 @@ int main()
     cudaFree(d_dp);
     cudaFree(d_y);
 
+    std::cout << "test model" << std::endl;
     // Test the model
     auto [d_test_x, d_test_s, d_test_z, d_test_p] = allocateTestDeviceMemory(test_batch_size, pixel_len, hidden_size, class_num);
     float *h_test_p;
     cudaMallocHost(&h_test_p, test_batch_size * class_num * sizeof(float));
+    std::cout << "forward pass" << std::endl;
     forwarPass(handle, d_test_x, d_w1, d_test_s, d_test_z, d_w2, d_test_p, test_batch_size, pixel_len, hidden_size, class_num);
     cudaMemcpy(h_test_p, d_test_p, test_batch_size * class_num * sizeof(float), cudaMemcpyDeviceToHost);
+    std::cout << "test accuracy" << std::endl;
     test_accuracy(h_test_label, h_test_p, test_batch_size, class_num);
 
+    std::cout << "free memory allocated for model weights and testing" << std::endl;
     // Free memory allocated for model weights and testing 
     cublasDestroy(handle);
     cudaFree(d_w1);
