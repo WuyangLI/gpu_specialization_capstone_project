@@ -109,7 +109,7 @@ __global__ void logKernel(float *d_A, int n)
     int stride = blockDim.x * gridDim.x;
     for (int i = index; i < n; i += stride)
     {
-        d_A[i] = logf(d_A[i]);
+        d_A[i] = log2f(d_A[i]);
     }
 }
 
@@ -162,7 +162,7 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
     cudaError_t cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
-        std::cerr << "CUDA kernel error from elementWiseNegativeDivideKernel: " << cudaGetErrorString(cudaError) << std::endl;
+        std::cerr << "CUDA kernel error when calculating d_dp: " << cudaGetErrorString(cudaError) << std::endl;
         return;
     }
     status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, class_num, batch_size, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
@@ -190,7 +190,7 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_w2 = d_w2 - lr * d_dw2
     */
 
-    const float lr = -0.0001f;
+    const float lr = - learning_rate;
     status = cublasSaxpy(handle, pixel_len * hidden_size, &lr, d_dw1, 1, d_w1, 1);
     if (status != CUBLAS_STATUS_SUCCESS) {
         std::cerr << "cuBLAS Saxpy failed when updating d_w1" << std::endl;
@@ -324,8 +324,8 @@ int main()
     // Hidden size of first MLP
     int hidden_size = 512;
     // number of epochs
-    int epoch_num = 10;
-    const float learning_rate = 0.0001;
+    int epoch_num = 1000;
+    const float learning_rate = 0.001;
 
     // create handle for cublas
     cublasHandle_t handle;
@@ -368,7 +368,7 @@ int main()
         std::cout << "epoch: " << i << " forwardPass" << std::endl;
         forwardPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
         std::cout << "epoch: " << i << " backPropagate" << std::endl;
-        backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, -learning_rate);
+        backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, learning_rate);
         cudaDeviceSynchronize();
         std::cout << std::endl;
     }
