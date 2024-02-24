@@ -134,27 +134,26 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_dw1 = T(d_x) * d_ds
     */
     
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
+    //const float alpha = 1.0f;
+    //const float beta = 0.0f;
 
     elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
-
-    cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, batch_size, class_num, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
+    //cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, batch_size, class_num, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
+    //cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
     reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_dz, batch_size * hidden_size);
     elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_dz, d_ds, batch_size * hidden_size);
-    cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
+    //cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
 
     /*
     update d_w1 and d_w2
-    d_w1 = d_w1 + lr * d_dw1
-    d_w2 = d_w2 + lr * d_dw2
+    d_w1 = d_w1 - lr * d_dw1
+    d_w2 = d_w2 - lr * d_dw2
     */
 
-    /*
-    cublasSaxpy(handle, pixel_len * hidden_size, &learning_rate, d_dw1, 1, d_w1, 1);
-    cublasSaxpy(handle, hidden_size * class_num, &learning_rate, d_dw2, 1, d_w2, 1);
-    */
+    const float lr = -0.001f;
+    cublasSaxpy(handle, pixel_len * hidden_size, &lr, d_dw1, 1, d_w1, 1);
+    cublasSaxpy(handle, hidden_size * class_num, &lr, d_dw2, 1, d_w2, 1);
+
 }
 
 __host__ std::tuple<float *, float *> allocateHostMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
@@ -217,8 +216,8 @@ __host__ std::tuple<float *, float *, float *, float *> allocateTestDeviceMemory
 }
 
 void xavier_weight_init(int n, float* h_w, int s) {
-    double lower_bound = -std::sqrt(1.0 / n);
-    double upper_bound = std::sqrt(1.0 / n);
+    double lower_bound = -std::sqrt(1.0 / (float) n);
+    double upper_bound = std::sqrt(1.0 / (float) n);
 
     // Create a random number generator
     std::random_device rd;
@@ -268,7 +267,7 @@ int main()
     // Hidden size of first MLP
     int hidden_size = 512;
     // number of epochs
-    int epoch_num = 3;
+    int epoch_num = 10;
     const float learning_rate = 0.001;
 
     // create handle for cublas
@@ -311,6 +310,7 @@ int main()
     {
         std::cout << "epoch: " << i << " forwarPass" << std::endl;
         forwarPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
+        cudaDeviceSynchronize();
         float *h_p = new float[batch_size*class_num];
         cudaMemcpy(h_p, d_p, batch_size*class_num * sizeof(float), cudaMemcpyDeviceToHost);
         for(int j = 0; j < class_num; j++) {
