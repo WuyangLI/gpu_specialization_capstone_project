@@ -54,6 +54,10 @@ __host__ std::tuple<float *, float *> loadImageAndLabel(std::string dataset, int
     std::string image_data_path = dataset + "-images.idx3-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(pixels_length) + ".txt";
     std::string label_data_path = dataset + "-labels.idx1-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(class_num) + ".txt";
     float *host_image = loadArrayFromFile(image_data_path.c_str(), batch_size, pixels_length);
+    // normalize image to [0, 1] interval
+    for(int i = 0; i < batch_size*pixels_length; i++) {
+        host_image[i] = host_image[i] / 255.0f;
+    }
     float *host_label = loadArrayFromFile(label_data_path.c_str(), batch_size, class_num);
     return std::make_tuple(host_image, host_label);
 }
@@ -109,7 +113,7 @@ __global__ void logKernel(float *d_A, int n)
     }
 }
 
-__host__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float *d_s, float *d_z, float *d_w2, float *d_p, int batch_size, int pixel_len, int hidden_size, int class_num)
+__host__ void forwardPass(cublasHandle_t handle, float *d_x, float *d_w1, float *d_s, float *d_z, float *d_w2, float *d_p, int batch_size, int pixel_len, int hidden_size, int class_num)
 {
     /*
      d_s = d_x * d_w1
@@ -118,9 +122,26 @@ __host__ void forwarPass(cublasHandle_t handle, float *d_x, float *d_w1, float *
      */
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, hidden_size, pixel_len, &alpha, d_x, batch_size, d_w1, pixel_len, &beta, d_s, batch_size);
+    cublasStatus_t status;
+    cudaError_t cudaError;
+    status = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, hidden_size, pixel_len, &alpha, d_x, batch_size, d_w1, pixel_len, &beta, d_s, batch_size);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Sgemm failed when calculating d_s" << std::endl;
+        cudaError = cudaGetLastError();
+        std::cerr << "CUDA kernel error: " << cudaGetErrorString(cudaError) << std::endl;
+        return;
+    }
     reluKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_s, d_z, batch_size * hidden_size);
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, class_num, hidden_size, &alpha, d_z, batch_size, d_w2, hidden_size, &beta, d_p, batch_size);
+    cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+        std::cerr << "CUDA kernel error from reluKernel: " << cudaGetErrorString(cudaError) << std::endl;
+        return;
+    }
+    status = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, batch_size, class_num, hidden_size, &alpha, d_z, batch_size, d_w2, hidden_size, &beta, d_p, batch_size);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Sgemm failed when calculating d_p" << std::endl;
+        return;
+    }
 }
 
 __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_p, float *d_dp, float *d_y, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
@@ -130,19 +151,38 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_dp = - d_y / d_p // element-wise divide
     d_dw2 = T(d_z) * d_dp
     d_dz = d_dp * T(d_w2)
-    d_ds = d_dz x d_dz // element-wise product
+    d_ds = d_dz x d_relu(d_z) // element-wise product
     d_dw1 = T(d_x) * d_ds
     */
     
-    //const float alpha = 1.0f;
-    //const float beta = 0.0f;
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
 
+    cublasStatus_t status;
     elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
-    //cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, batch_size, class_num, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
-    //cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
-    reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_dz, batch_size * hidden_size);
-    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_dz, d_ds, batch_size * hidden_size);
-    //cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
+    cudaError_t cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+        std::cerr << "CUDA kernel error from elementWiseNegativeDivideKernel: " << cudaGetErrorString(cudaError) << std::endl;
+        return;
+    }
+    status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, class_num, batch_size, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Sgemm failed when calculating d_dw2" << std::endl;
+        return;
+    }
+    status = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Sgemm failed when calculating d_dz" << std::endl;
+        return;
+    }
+    // reuse d_z for deviation of d_relu_z
+    reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_z, batch_size * hidden_size);
+    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_z, d_ds, batch_size * hidden_size);
+    status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Sgemm failed when calculating d_dw1" << std::endl;
+        return;
+    }
 
     /*
     update d_w1 and d_w2
@@ -150,10 +190,17 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_w2 = d_w2 - lr * d_dw2
     */
 
-    const float lr = -0.001f;
-    cublasSaxpy(handle, pixel_len * hidden_size, &lr, d_dw1, 1, d_w1, 1);
-    cublasSaxpy(handle, hidden_size * class_num, &lr, d_dw2, 1, d_w2, 1);
-
+    const float lr = -0.0001f;
+    status = cublasSaxpy(handle, pixel_len * hidden_size, &lr, d_dw1, 1, d_w1, 1);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Saxpy failed when updating d_w1" << std::endl;
+        return;
+    }
+    status = cublasSaxpy(handle, hidden_size * class_num, &lr, d_dw2, 1, d_w2, 1);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS Saxpy failed when updating d_w2" << std::endl;
+        return;
+    }
 }
 
 __host__ std::tuple<float *, float *> allocateHostMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
@@ -254,6 +301,16 @@ __host__ float test_accuracy(float *h_y, float *h_p, int test_batch_size, int cl
     return accuracy;
 }
 
+void debug_print_a_matrix(float *d_m, int dim1, int dim2) {
+    float *h_m = new float[dim1 * dim2];
+    cudaMemcpy(h_m, d_m, dim1 * dim2 * sizeof(float), cudaMemcpyDeviceToHost);
+    for(int j = 0; j < dim2; j++) {
+        printf("%.3f ", h_m[j]);
+    }
+    std::cout << std::endl;
+    delete[] h_m;
+}
+
 int main()
 {
     // train batch size
@@ -268,7 +325,7 @@ int main()
     int hidden_size = 512;
     // number of epochs
     int epoch_num = 10;
-    const float learning_rate = 0.001;
+    const float learning_rate = 0.0001;
 
     // create handle for cublas
     cublasHandle_t handle;
@@ -308,19 +365,12 @@ int main()
     // Train the model
     for (int i = 0; i < epoch_num; i++)
     {
-        std::cout << "epoch: " << i << " forwarPass" << std::endl;
-        forwarPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
-        cudaDeviceSynchronize();
-        float *h_p = new float[batch_size*class_num];
-        cudaMemcpy(h_p, d_p, batch_size*class_num * sizeof(float), cudaMemcpyDeviceToHost);
-        for(int j = 0; j < class_num; j++) {
-            printf("%.3f ", h_p[j]);
-        }
-        std::cout << std::endl;
-        delete[] h_p;
+        std::cout << "epoch: " << i << " forwardPass" << std::endl;
+        forwardPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_p, batch_size, pixel_len, hidden_size, class_num);
         std::cout << "epoch: " << i << " backPropagate" << std::endl;
         backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, -learning_rate);
         cudaDeviceSynchronize();
+        std::cout << std::endl;
     }
     
     std::cout << "free the allocated memory for training" << std::endl;
@@ -343,7 +393,7 @@ int main()
     auto [d_test_x, d_test_s, d_test_z, d_test_p] = allocateTestDeviceMemory(test_batch_size, pixel_len, hidden_size, class_num);
     float *h_test_p = new float[test_batch_size * class_num];
     std::cout << "forward pass" << std::endl;
-    forwarPass(handle, d_test_x, d_w1, d_test_s, d_test_z, d_w2, d_test_p, test_batch_size, pixel_len, hidden_size, class_num);
+    forwardPass(handle, d_test_x, d_w1, d_test_s, d_test_z, d_w2, d_test_p, test_batch_size, pixel_len, hidden_size, class_num);
     cudaMemcpy(h_test_p, d_test_p, test_batch_size * class_num * sizeof(float), cudaMemcpyDeviceToHost);
     std::cout << "test accuracy" << std::endl;
     test_accuracy(h_test_label, h_test_p, test_batch_size, class_num);
