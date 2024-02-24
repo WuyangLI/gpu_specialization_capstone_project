@@ -134,22 +134,23 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_dw1 = T(d_x) * d_ds
     */
     
-    /*
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    
+
     elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
+
     cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, batch_size, class_num, &alpha, d_z, batch_size, d_dp, batch_size, &beta, d_dw2, hidden_size);
     cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_dp, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
     reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_dz, batch_size * hidden_size);
     elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_dz, d_ds, batch_size * hidden_size);
     cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
-    */
+
     /*
     update d_w1 and d_w2
     d_w1 = d_w1 + lr * d_dw1
     d_w2 = d_w2 + lr * d_dw2
     */
+
     /*
     cublasSaxpy(handle, pixel_len * hidden_size, &learning_rate, d_dw1, 1, d_w1, 1);
     cublasSaxpy(handle, hidden_size * class_num, &learning_rate, d_dw2, 1, d_w2, 1);
@@ -230,7 +231,7 @@ void xavier_weight_init(int n, float* h_w, int s) {
     }
 }
 
-__host__ float test_accuracy(float* h_y, float* h_p, int test_batch_size, int class_num) {
+__host__ float test_accuracy(float *h_y, float *h_p, int test_batch_size, int class_num) {
     int total_num = test_batch_size;
     int correct_num = 0;
     for (int i = 0; i < test_batch_size; i++)
@@ -319,6 +320,7 @@ int main()
         delete[] h_p;
         std::cout << "epoch: " << i << " backPropagate" << std::endl;
         backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, -learning_rate);
+        cudaDeviceSynchronize();
     }
     
     std::cout << "free the allocated memory for training" << std::endl;
@@ -339,8 +341,7 @@ int main()
     std::cout << "test model" << std::endl;
     // Test the model
     auto [d_test_x, d_test_s, d_test_z, d_test_p] = allocateTestDeviceMemory(test_batch_size, pixel_len, hidden_size, class_num);
-    float *h_test_p;
-    cudaMallocHost(&h_test_p, test_batch_size * class_num * sizeof(float));
+    float *h_test_p = new float[test_batch_size * class_num];
     std::cout << "forward pass" << std::endl;
     forwarPass(handle, d_test_x, d_w1, d_test_s, d_test_z, d_w2, d_test_p, test_batch_size, pixel_len, hidden_size, class_num);
     cudaMemcpy(h_test_p, d_test_p, test_batch_size * class_num * sizeof(float), cudaMemcpyDeviceToHost);
@@ -355,7 +356,7 @@ int main()
 
     delete[] h_test_image;
     delete[] h_test_label;
-    cudaFreeHost(h_test_p);
+    delete[] h_test_p;
     cudaFreeHost(h_w1);
     cudaFreeHost(h_w2);
     cudaFree(d_test_x);
