@@ -1,32 +1,40 @@
-# CUDAatScaleForTheEnterpriseCourseProjectTemplate
-This is a template for the course project for the CUDA at Scale for the Enterprise
+# Linear Algebra MNIST Classifier using cuBlas
 
 ## Project Description
 
-Beyond just being a template for course members, this project can be used by non-course members as the general structure for CUDA projects.
+A simple MNIST classifier using cuBlas
+the classifier consists of two MLP layers and relu activation
+it reads the grey-sclae image of MNIST image, normalizes image tensor to [0, 1], pass the tensor (float array in implementation) through the two layer MLP, and then calculate the softmax classification score. The index of which the respective element value is the greatest is the prediction of the classifier.
+
+
+in algebra, the model prediction P is a function of input X and weights W1, W2, depicted as below:
+        P = softmax(relu(X * W1) * W2)
+
+After 10 epochs of training, training loss is around: 1.6
+accuracy of the model is around: 64.35 %
+
+Please note that the accuracy of random-guess is 10%.
 
 ## Code Organization
 
-```bin/```
-This folder should hold all binary/executable code that is built automatically or manually. Executable code should have use the .exe extension or programming language-specific extension.
-
 ```data/```
-This folder should hold all example data in any format. If the original data is rather large or can be brought in via scripts, this can be left blank in the respository, so that it doesn't require major downloads when all that is desired is the code/structure.
-
-```lib/```
-Any libraries that are not installed via the Operating System-specific package manager should be placed here, so that it is easier for inclusion/linking.
+This folder holds traning and testing MNIST data in binary format. You can use the python script `generate_train_test_data.py` to generate readable txt dataset.
 
 ```src/```
-The source code should be placed here in a hierarchical fashion, as appropriate.
+There are two files in src. 
+- the prototype of the classifier
+  This is implemented in numpy for verifying the correctness of the algorithm, especially the `backPropagation`. As we implement the classifier from scratch, there is no `Automatic differentiation` system readily avilable to use. Thus we manually derieve the derivative of the matrixes and build backpropagation machenism for this simple classifier.
 
+- The MNIST classifier using cuBlas
+  this file is basically cuda version of the python prototype.
+  element-wise operations are implemented from scratch as cuBlas doesn't support them.
+  matrix linear algebra operations are implemented using cuBlas api.
+  
 ```README.md```
-This file should hold the description of the project so that anyone cloning or deciding if they want to clone this repository can understand its purpose to help with their decision.
+This file holds the description of the project
 
-```INSTALL```
-This file should hold the human-readable set of instructions for installing the code so that it can be executed. If possible it should be organized around different operating systems, so that it can be done by as many people as possible with different constraints.
-
-```Makefile or CMAkeLists.txt or build.sh```
-There should be some rudimentary scripts for building your project's code in an automatic fashion.
+```Makefile```
+you can use `make build` to build the code
 
 ```run.sh```
 An optional script used to run your executable code, either with or without command-line arguments.
