@@ -5,6 +5,10 @@
 A simple MNIST classifier using cuBlas
 the classifier consists of two linear projection layers and relu activation.
 
+<p align="center">
+  <img src="data/classifier_structure.png" />
+</p>
+
 - it reads the grey-sclae image of MNIST image
 - normalizes image tensor to [0, 1]
 - passes the tensor (float array in implementation) through the two-layer MLP
