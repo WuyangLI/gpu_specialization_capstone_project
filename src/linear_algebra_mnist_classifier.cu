@@ -150,7 +150,7 @@ __global__ void logKernel(float *d_a, float *d_b, int n)
     }
 }
 
-__global__ void clipGradientKernel(float *d_g,  float min_gradient, float max_gradient, int n)
+__global__ void clipGradientKernel(float *d_g, float min_gradient, float max_gradient, int n)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
@@ -208,7 +208,15 @@ __host__ void forwardPass(cublasHandle_t handle, float *d_x, float *d_w1, float 
 
 __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_relu, float *d_f, float *d_df, float *d_p, float *d_dp, float *d_softmax, float *d_y, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
 {
-    /*
+    /* 
+    This function is the c++ cuda version of back_propagate function in the python prototype
+        dp = - np.divide(y, p + epsilon)
+        # derivative of sofmax(v) w.r.t v is sofmax(v) - sofmax(v)*sofmax(v)
+        df = np.multiply(dp, p - np.multiply(p, p))
+        dw2 = np.dot(np.transpose(z), df)
+        dz = np.dot(df, np.transpose(w2))
+        ds = np.multiply(dz, (s > 0).astype(float))
+        dw1 = np.dot(np.transpose(x), ds)
     */
     
     const float alpha = 1.0f;
@@ -288,13 +296,28 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     }
 }
 
+void xavierWeightInit(int n, float* h_w, int s) {
+    double lower_bound = -std::sqrt(1.0 / (float) n);
+    double upper_bound = std::sqrt(1.0 / (float) n);
+
+    // Create a random number generator
+    std::random_device rd;
+    std::default_random_engine eng(rd());
+    std::uniform_real_distribution<float> dist(lower_bound, upper_bound);
+
+    // Generate a random number between -sqrt(1/n) and sqrt(1/n)
+    for (int i = 0; i < s; i++) {
+        h_w[i] = dist(eng);
+    }
+}
+
 __host__ std::tuple<float *, float *> allocateHostMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
 {
-    float *h_w1, *h_w2;
-    size_t size_w1 = pixel_len * hidden_size * sizeof(float);
-    size_t size_w2 = hidden_size * class_num * sizeof(float);
-    cudaMallocHost(&h_w1, size_w1);
-    cudaMallocHost(&h_w2, size_w2);
+    float *h_w1 = new float[pixel_len * hidden_size];
+    float *h_w2 = new float[hidden_size * class_num];
+    // initialize weights and copy to device
+    xavierWeightInit(pixel_len, h_w1, pixel_len * hidden_size);
+    xavierWeightInit(hidden_size, h_w2, hidden_size * class_num);
     return std::make_tuple(h_w1, h_w2);
 }
 
@@ -352,21 +375,6 @@ __host__ std::tuple<float *, float *, float *, float *, float *> allocateTestDev
     cudaMalloc(&d_p, size_p);
 
     return std::make_tuple(d_x, d_s, d_z, d_f, d_p);
-}
-
-void xavierWeightInit(int n, float* h_w, int s) {
-    double lower_bound = -std::sqrt(1.0 / (float) n);
-    double upper_bound = std::sqrt(1.0 / (float) n);
-
-    // Create a random number generator
-    std::random_device rd;
-    std::default_random_engine eng(rd());
-    std::uniform_real_distribution<float> dist(lower_bound, upper_bound);
-
-    // Generate a random number between -sqrt(1/n) and sqrt(1/n)
-    for (int i = 0; i < s; i++) {
-        h_w[i] = dist(eng);
-    }
 }
 
 __host__ float calculateLoss(float *d_p, float *d_y, int batch_size, int class_num) {
@@ -461,7 +469,7 @@ int main()
         return 1;
     }
 
-    std::cout << "allocate host memory for training model" << std::endl;
+    std::cout << "allocate host memory for model weights" << std::endl;
     // allocate host memory for model training
     auto [h_w1, h_w2]  = allocateHostMemory(batch_size, pixel_len, hidden_size, class_num);
 
@@ -469,10 +477,7 @@ int main()
     // allocate device memory for model training
     auto [d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_relu, d_f, d_df, d_p, d_dp, d_softmax, d_y] = allocateDeviceMemory(batch_size, pixel_len, hidden_size, class_num);
 
-    std::cout << "initialize weights and copy to device" << std::endl;
-    // initialize weights and copy to device
-    xavierWeightInit(pixel_len, h_w1, pixel_len * hidden_size);
-    xavierWeightInit(hidden_size, h_w2, hidden_size * class_num);
+    std::cout << "Copy weights to device" << std::endl;
     cudaMemcpy(d_w1, h_w1, pixel_len * hidden_size *sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_w2, h_w2, hidden_size * class_num * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -533,8 +538,8 @@ int main()
     delete[] h_test_image;
     delete[] h_test_label;
     delete[] h_test_p;
-    cudaFreeHost(h_w1);
-    cudaFreeHost(h_w2);
+    delete[] h_w1;
+    delete[] h_w2;
     cudaFree(d_test_x);
     cudaFree(d_test_s);
     cudaFree(d_test_z);
