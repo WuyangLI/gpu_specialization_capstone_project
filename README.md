@@ -3,12 +3,29 @@
 ## Project Description
 
 A simple MNIST classifier using cuBlas
-the classifier consists of two MLP layers and relu activation
-it reads the grey-sclae image of MNIST image, normalizes image tensor to [0, 1], pass the tensor (float array in implementation) through the two layer MLP, and then calculate the softmax classification score. The index of which the respective element value is the greatest is the prediction of the classifier.
+the classifier consists of two MLP layers and relu activation.
+
+- it reads the grey-sclae image of MNIST image
+- normalizes image tensor to [0, 1]
+- passes the tensor (float array in implementation) through the two layer MLP
+- and then calculates the softmax classification score.
+- The index of which the respective element value is the greatest is the prediction of the classifier.
 
 
-in algebra, the model prediction P is a function of input X and weights W1, W2, depicted as below:
-        P = softmax(relu(X * W1) * W2)
+In algebra equation, given input `X`, the model prediction is `P`:
+
+$$P = softmax(relu(X * W_{1}) *W_{2})$$
+
+In this equation:
+
+`W_{1}` is the weight of the first MLP
+
+`relu()` denotes the rectified linear unit activation function
+
+`W_{2}` is the weight of the second MLP
+
+`softmax()` denotes the softmax function
+
 
 After 10 epochs of training, training loss is around: 1.6
 accuracy of the model is around: 64.35 %
