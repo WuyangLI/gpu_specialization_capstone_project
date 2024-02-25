@@ -1,6 +1,5 @@
 import numpy as np
 from math import sqrt
-from numpy import mean
 from numpy.random import rand
 import struct
 from array import array
@@ -71,9 +70,9 @@ def cross_entropy(y, p):
     # Ensure numerical stability by adding a small epsilon value
     epsilon = 1e-15
     # Apply the cross-entropy formula element-wise
-    cross_entropy = -y * np.log(p + epsilon)
+    cross_entropy = np.multiply(-y, np.log(p + epsilon))
     # Calculate the mean cross-entropy across all elements
-    mean_cross_entropy = np.mean(cross_entropy)
+    mean_cross_entropy = (1.0/y.shape[0]) * np.sum(cross_entropy)
     return mean_cross_entropy
 
 def forward_pass(x, y, w1, w2):
@@ -101,6 +100,7 @@ def backward_pass(x, s, z, f, p, y, w1, w2, lr):
 
 def train_model(x, y, w1, w2, epoch_num, lr):
     for i in range(epoch_num):
+        print(f"------ epoch {i} -------")
         s, z, f, p = forward_pass(x, y, w1, w2)
         w1, w2 = backward_pass(x, s, z, f, p, y, w1, w2, lr)
     return w1, w2
@@ -119,6 +119,9 @@ def proof_of_concept():
 
     in algebra, the model prediction P is a function of input X and weights W1, W2, depicted as below:
         P = softmax(relu(X * W1) * W2)
+
+    After 10 epochs of training, training loss is: 1.78
+    accuracy of the model is: 56.50 % 
     """
     batch_size = 6000
     test_batch_size = 1000
@@ -133,10 +136,10 @@ def proof_of_concept():
     # initialize model - two layer MLP
     w1 = xavier_init(pixel_len, hidden_size)
     w2 = xavier_init(hidden_size, class_num)
-    w1, w2 = train_model(np.array(train_img), np.array(train_label), w1, w2, 10, 0.001)
+    w1, w2 = train_model(np.array(train_img) / 255.0, np.array(train_label), w1, w2, 10, 0.001)
 
     # test trained model
-    _, _, _, test_p = forward_pass(np.array(test_img), np.array(test_label), w1, w2)
+    _, _, _, test_p = forward_pass(np.array(test_img) / 255.0, np.array(test_label), w1, w2)
     test_prediction_idx = np.argmax(test_p, axis=1)
     test_groundtruth_idx = np.argmax(np.array(test_label), axis=1)
     accuracy = np.sum((test_prediction_idx == test_groundtruth_idx).astype(float)) / len(test_prediction_idx)
