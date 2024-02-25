@@ -6,7 +6,7 @@ from array import array
 from os.path import join
 
 # load MNIST dataset from file
-def read_images_labels(images_filepath, labels_filepath, sample=True):        
+def read_images_labels(images_filepath, labels_filepath, sample=False):        
     with open(labels_filepath, 'rb') as file:
         magic, size = struct.unpack(">II", file.read(8))
         if magic != 2049:
@@ -120,8 +120,8 @@ def proof_of_concept():
     in algebra, the model prediction P is a function of input X and weights W1, W2, depicted as below:
         P = softmax(relu(X * W1) * W2)
 
-    After 10 epochs of training, training loss is: 1.78
-    accuracy of the model is: 56.50 % 
+    After 10 epochs of training, training loss is: 1.58
+    accuracy of the model is: 64.35 %
     """
     batch_size = 6000
     test_batch_size = 1000
