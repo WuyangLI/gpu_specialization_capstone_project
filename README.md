@@ -3,11 +3,11 @@
 ## Project Description
 
 A simple MNIST classifier using cuBlas
-the classifier consists of two MLP layers and relu activation.
+the classifier consists of two linear projection layers and relu activation.
 
 - it reads the grey-sclae image of MNIST image
 - normalizes image tensor to [0, 1]
-- passes the tensor (float array in implementation) through the two layer MLP
+- passes the tensor (float array in implementation) through the two-layer MLP
 - and then calculates the softmax classification score.
 - The index of which the respective element value is the greatest is the prediction of the classifier.
 
@@ -18,11 +18,11 @@ $$P = softmax(relu(X * W_{1}) *W_{2})$$
 
 In this equation:
 
-`W_{1}` is the weight of the first MLP
+`W_{1}` is the weight of the first linear projection of MLP
 
 `relu()` denotes the rectified linear unit activation function
 
-`W_{2}` is the weight of the second MLP
+`W_{2}` is the weight of the second linear projection of MLP
 
 `softmax()` denotes the softmax function
 
