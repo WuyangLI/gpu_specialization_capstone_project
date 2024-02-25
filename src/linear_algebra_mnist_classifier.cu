@@ -87,14 +87,20 @@ __global__ void elementWiseNegativeDivideKernel(float *d_a, float *d_b, float *d
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
+    float epsilon = 1.0e-15;
     for (int i = index; i < n; i += stride)
     {
-        d_c[i] = -d_a[i] / d_b[i];
+        d_c[i] = - d_a[i] / (d_b[i] + epsilon);
     }
 }
 
 __global__ void softmaxKernel(float *d_a, float *d_c, int row_num, int col_num)
 {
+    /*
+    This is not an efficient implementation of softmax
+    for numeric stability, we calcualte softmax in the following way:
+        exp(pij - max_row_i) / sum(exp(pi* - max_row_i))
+    */
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     int n = row_num * col_num;
@@ -102,11 +108,14 @@ __global__ void softmaxKernel(float *d_a, float *d_c, int row_num, int col_num)
     {
         int row = i / col_num;
         double exp_sum = 0.0;
-        for (int j = row*col_num; j < row*col_num + col_num; j++) {
-            exp_sum += exp(d_a[j] - d_a[i]);
+        float max_row_val = d_a[row * col_num];
+        for (int j = row * col_num; j < row * col_num + col_num; j++) {
+            max_row_val = max(max_row_val, d_a[j]);
         }
-        // d_c[i] = (float) (exp(d_a[i]) / exp_sum);
-        d_c[i] = (float) (1.0 / exp_sum);
+        for (int j = row * col_num; j < row * col_num + col_num; j++) {
+            exp_sum += exp(d_a[j] - max_row_val);
+        }
+        d_c[i] = (float) (exp(d_a[i] - max_row_val) / exp_sum);
     }
 }
 
@@ -130,14 +139,33 @@ __global__ void elementWiseMultiplyKernel(float *d_a, float *d_b, float *d_c, in
     }
 }
 
-__global__ void logKernel(float *d_A, int n)
+__global__ void logKernel(float *d_a, float *d_b, int n)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    float epsilon = 1.0e-15;
+    for (int i = index; i < n; i += stride)
+    {
+        d_b[i] = log2f(d_a[i] + epsilon);
+    }
+}
+
+__global__ void clipGradientKernel(float *d_g,  float min_gradient, float max_gradient, int n)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     for (int i = index; i < n; i += stride)
     {
-        d_A[i] = log2f(d_A[i]);
-    }
+        if (d_g[i] < min_gradient) {
+            d_g[i] = min_gradient;
+        }
+        else if (d_g[i] > max_gradient) {
+            d_g[i] = max_gradient;
+        }
+        else {
+            d_g[i] = d_g[i];
+        }
+    }   
 }
 
 __host__ void forwardPass(cublasHandle_t handle, float *d_x, float *d_w1, float *d_s, float *d_z, float *d_w2, float *d_f, float *d_p, int batch_size, int pixel_len, int hidden_size, int class_num)
@@ -178,51 +206,50 @@ __host__ void forwardPass(cublasHandle_t handle, float *d_x, float *d_w1, float 
     }
 }
 
-__host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_f, float *d_df, float *d_p, float *d_dp, float *d_y, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
+__host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, float *d_w2, float *d_dw2, float *d_x, float *d_s, float *d_ds, float *d_z, float *d_dz, float *d_relu, float *d_f, float *d_df, float *d_p, float *d_dp, float *d_softmax, float *d_y, int batch_size, int pixel_len, int hidden_size, int class_num, const float learning_rate)
 {
     /*
-    calculate d_dw2 and d_dw1
-    d_dp = - d_y / d_p // element-wise divide
-    d_df = d_dp x d_softmax(d_f) // element-wise product
-    d_dw2 = T(d_z) * d_df
-    d_dz = d_df * T(d_w2)
-    d_ds = d_dz x d_relu(d_z) // element-wise product
-    d_dw1 = T(d_x) * d_ds
     */
     
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
     cublasStatus_t status;
-    // 
+    // dp = - np.divide(y, p + epsilon)
     elementWiseNegativeDivideKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_p, d_dp, batch_size * class_num);
     cudaError_t cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
         std::cerr << "CUDA kernel error when calculating d_dp: " << cudaGetErrorString(cudaError) << std::endl;
         return;
     }
-    // 
-    softmaxDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_p, d_df, batch_size * class_num);
-    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dp, d_df, d_df, batch_size * class_num);
-
+    // df = np.multiply(dp, p - np.multiply(p, p))
+    softmaxDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_p, d_softmax, batch_size * class_num);
+    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dp, d_softmax, d_df, batch_size * class_num);
     cudaError = cudaGetLastError();
     if (cudaError != cudaSuccess) {
         std::cerr << "CUDA kernel error when calculating d_df: " << cudaGetErrorString(cudaError) << std::endl;
         return;
     }
+
+    // dw2 = np.dot(np.transpose(z), df)
     status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, hidden_size, class_num, batch_size, &alpha, d_z, batch_size, d_df, batch_size, &beta, d_dw2, hidden_size);
     if (status != CUBLAS_STATUS_SUCCESS) {
         std::cerr << "cuBLAS Sgemm failed when calculating d_dw2" << std::endl;
         return;
     }
+
+    // dz = np.dot(df, np.transpose(w2))
     status = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, batch_size, hidden_size, class_num, &alpha, d_df, batch_size, d_w2, hidden_size, &beta, d_dz, batch_size);
     if (status != CUBLAS_STATUS_SUCCESS) {
         std::cerr << "cuBLAS Sgemm failed when calculating d_dz" << std::endl;
         return;
     }
-    // reuse d_ds for deviation of d_relu_z
-    reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_z, d_ds, batch_size * hidden_size);
-    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_ds, d_ds, batch_size * hidden_size);
+
+    // ds = np.multiply(dz, (s > 0).astype(float))
+    reluDerivativeKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_s, d_relu, batch_size * hidden_size);
+    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dz, d_relu, d_ds, batch_size * hidden_size);
+
+    // dw1 = np.dot(np.transpose(x), ds)
     status = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, pixel_len, hidden_size, batch_size, &alpha, d_x, batch_size, d_ds, batch_size, &beta, d_dw1, pixel_len);
     if (status != CUBLAS_STATUS_SUCCESS) {
         std::cerr << "cuBLAS Sgemm failed when calculating d_dw1" << std::endl;
@@ -235,6 +262,19 @@ __host__ void backPropagate(cublasHandle_t handle, float *d_w1, float *d_dw1, fl
     d_w2 = d_w2 - lr * d_dw2
     */
 
+    // clip the gradients of w1 and w2 to [-1, 1]
+    clipGradientKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dw1, -1.0f, 1.0f, pixel_len * hidden_size);
+    cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+        std::cerr << "CUDA kernel error when clipping gradients of w1 : " << cudaGetErrorString(cudaError) << std::endl;
+        return;
+    }
+    clipGradientKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_dw2, -1.0f, 1.0f, hidden_size * class_num);
+    cudaError = cudaGetLastError();
+    if (cudaError != cudaSuccess) {
+        std::cerr << "CUDA kernel error when clipping gradients of w2 : " << cudaGetErrorString(cudaError) << std::endl;
+        return;
+    }
     const float lr = - learning_rate;
     status = cublasSaxpy(handle, pixel_len * hidden_size, &lr, d_dw1, 1, d_w1, 1);
     if (status != CUBLAS_STATUS_SUCCESS) {
@@ -258,7 +298,7 @@ __host__ std::tuple<float *, float *> allocateHostMemory(int batch_size, int pix
     return std::make_tuple(h_w1, h_w2);
 }
 
-__host__ std::tuple<float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *> allocateDeviceMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
+__host__ std::tuple<float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *, float *> allocateDeviceMemory(int batch_size, int pixel_len, int hidden_size, int class_num)
 {
     // model weights and their derivative matrix
     float *d_w1, *d_w2, *d_dw1, *d_dw2;
@@ -271,7 +311,7 @@ __host__ std::tuple<float *, float *, float *, float *, float *, float *, float 
     cudaMalloc(&d_dw2, size_w2);
 
     // input, output, intermediate matrix and their derivative
-    float *d_x, *d_s, *d_ds, *d_z, *d_dz, *d_f, *d_df, *d_p, *d_dp, *d_y;
+    float *d_x, *d_s, *d_ds, *d_z, *d_dz, *d_relu, *d_f, *d_df, *d_p, *d_dp, *d_softmax, *d_y;
     size_t size_x = batch_size * pixel_len * sizeof(float);
     size_t size_s = batch_size * hidden_size * sizeof(float);
     size_t size_z = batch_size * hidden_size * sizeof(float);
@@ -284,13 +324,15 @@ __host__ std::tuple<float *, float *, float *, float *, float *, float *, float 
     cudaMalloc(&d_ds, size_s);
     cudaMalloc(&d_z, size_z);
     cudaMalloc(&d_dz, size_z);
+    cudaMalloc(&d_relu, size_z);
     cudaMalloc(&d_f, size_f);
     cudaMalloc(&d_df, size_f);
     cudaMalloc(&d_p, size_p);
     cudaMalloc(&d_dp, size_p);
+    cudaMalloc(&d_softmax, size_p);
     cudaMalloc(&d_y, size_y);
 
-    return std::make_tuple(d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_f, d_df, d_p, d_dp, d_y);
+    return std::make_tuple(d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_relu, d_f, d_df, d_p, d_dp, d_softmax, d_y);
 }
 
 __host__ std::tuple<float *, float *, float *, float *, float *> allocateTestDeviceMemory(int test_batch_size, int pixel_len, int hidden_size, int class_num)
@@ -312,7 +354,7 @@ __host__ std::tuple<float *, float *, float *, float *, float *> allocateTestDev
     return std::make_tuple(d_x, d_s, d_z, d_f, d_p);
 }
 
-void xavier_weight_init(int n, float* h_w, int s) {
+void xavierWeightInit(int n, float* h_w, int s) {
     double lower_bound = -std::sqrt(1.0 / (float) n);
     double upper_bound = std::sqrt(1.0 / (float) n);
 
@@ -327,22 +369,50 @@ void xavier_weight_init(int n, float* h_w, int s) {
     }
 }
 
-__host__ float test_accuracy(float *h_y, float *h_p, int test_batch_size, int class_num) {
+__host__ float calculateLoss(float *d_p, float *d_y, int batch_size, int class_num) {
+    float *d_loss;
+    size_t size_l = batch_size * class_num * sizeof(float);
+    float *h_loss = new float[batch_size * class_num];
+    float *d_log_p = new float[batch_size * class_num];
+
+    cudaMalloc(&d_log_p, size_l);
+    cudaMalloc(&d_loss, size_l);
+
+    logKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_p, d_log_p, batch_size * class_num);
+    elementWiseMultiplyKernel<<<NUM_BLOCKS, BLOCK_SIZE>>>(d_y, d_log_p, d_loss, batch_size * class_num);
+    cudaMemcpy(h_loss, d_loss, size_l, cudaMemcpyDeviceToHost);
+    cudaFree(d_loss);
+    cudaFree(d_log_p);
+
+    float loss = 0.0f;
+    for (int i = 0; i < batch_size * class_num; i++) {
+        loss += (-1.0f / batch_size) * h_loss[i];
+    }
+    delete[] h_loss;
+    return loss;
+}
+
+__host__ float testAccuracy(float *h_y, float *h_p, int test_batch_size, int class_num) {
     int total_num = test_batch_size;
     int correct_num = 0;
     for (int i = 0; i < test_batch_size; i++)
     {
         int max_prob_index = i * class_num;
+        int max_y_index = i * class_num;
         float max_prob = 0.0;
         for (int j = 0; j < class_num; j++)
         {
             if (h_p[i * class_num + j] > max_prob) {
                 max_prob = h_p[i * class_num + j];
-                max_prob_index = i * class_num + j;
+                max_prob_index = j;
+            }
+
+            if (h_y[i * class_num + j] > 0.999) {
+                max_y_index = j;
             }
         }
         // check if the respective element in ground-truth is 1.
-        if (h_y[max_prob_index] > 0.999) {
+        if (max_prob_index == max_y_index) {
             correct_num++;
         }
     }
@@ -374,7 +444,7 @@ int main()
     // Hidden size of first MLP
     int hidden_size = 512;
     // number of epochs
-    int epoch_num = 4;
+    int epoch_num = 10;
     const float learning_rate = 0.001;
 
     // create handle for cublas
@@ -397,12 +467,12 @@ int main()
 
     std::cout << "allocate device memory for training model" << std::endl;
     // allocate device memory for model training
-    auto [d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_f, d_df, d_p, d_dp, d_y] = allocateDeviceMemory(batch_size, pixel_len, hidden_size, class_num);
+    auto [d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_relu, d_f, d_df, d_p, d_dp, d_softmax, d_y] = allocateDeviceMemory(batch_size, pixel_len, hidden_size, class_num);
 
     std::cout << "initialize weights and copy to device" << std::endl;
     // initialize weights and copy to device
-    xavier_weight_init(pixel_len, h_w1, pixel_len * hidden_size);
-    xavier_weight_init(hidden_size, h_w2, hidden_size * class_num);
+    xavierWeightInit(pixel_len, h_w1, pixel_len * hidden_size);
+    xavierWeightInit(hidden_size, h_w2, hidden_size * class_num);
     cudaMemcpy(d_w1, h_w1, pixel_len * hidden_size *sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_w2, h_w2, hidden_size * class_num * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -417,10 +487,10 @@ int main()
     {
         std::cout << "epoch: " << i << " forwardPass" << std::endl;
         forwardPass(handle, d_x, d_w1, d_s, d_z, d_w2, d_f, d_p, batch_size, pixel_len, hidden_size, class_num);
-        debug_print_a_matrix(d_p, batch_size, class_num);
-        debug_print_a_matrix(d_y, batch_size, class_num);
+        float loss = calculateLoss(d_p, d_y, batch_size, class_num);
+        printf("epoech %d loss is %.3f \n", i, loss);
         std::cout << "epoch: " << i << " backPropagate" << std::endl;
-        backPropagate( handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_f, d_df, d_p, d_dp, d_y, batch_size, pixel_len, hidden_size, class_num, learning_rate);
+        backPropagate(handle, d_w1, d_dw1, d_w2, d_dw2, d_x, d_s, d_ds, d_z, d_dz, d_relu, d_f, d_df, d_p, d_dp, d_softmax, d_y, batch_size, pixel_len, hidden_size, class_num, learning_rate);
         cudaDeviceSynchronize();
         std::cout << std::endl;
     }
@@ -436,10 +506,12 @@ int main()
     cudaFree(d_ds);
     cudaFree(d_z);
     cudaFree(d_dz);
-    cudaFree(d_p);
-    cudaFree(d_dp);
     cudaFree(d_f);
     cudaFree(d_df);
+    cudaFree(d_p);
+    cudaFree(d_dp);
+    cudaFree(d_relu);
+    cudaFree(d_softmax);
     cudaFree(d_y);
 
     std::cout << "test model" << std::endl;
@@ -450,7 +522,7 @@ int main()
     forwardPass(handle, d_test_x, d_w1, d_test_s, d_test_z, d_w2, d_test_f, d_test_p, test_batch_size, pixel_len, hidden_size, class_num);
     cudaMemcpy(h_test_p, d_test_p, test_batch_size * class_num * sizeof(float), cudaMemcpyDeviceToHost);
     std::cout << "test accuracy" << std::endl;
-    test_accuracy(h_test_label, h_test_p, test_batch_size, class_num);
+    testAccuracy(h_test_label, h_test_p, test_batch_size, class_num);
 
     std::cout << "free memory allocated for model weights and testing" << std::endl;
     // Free memory allocated for model weights and testing 
