@@ -3,7 +3,7 @@ from array import array
 from os.path import join
 import argparse
 
-def read_images_labels(images_filepath, labels_filepath, sample=True):        
+def read_images_labels(images_filepath, labels_filepath, sample=False):        
     with open(labels_filepath, 'rb') as file:
         magic, size = struct.unpack(">II", file.read(8))
         if magic != 2049:

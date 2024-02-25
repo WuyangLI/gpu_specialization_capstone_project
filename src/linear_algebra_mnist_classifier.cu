@@ -51,8 +51,8 @@ __host__ float *loadArrayFromFile(const char *filename, int &rows, int &cols)
 __host__ std::tuple<float *, float *> loadImageAndLabel(std::string dataset, int batch_size, int pixels_length, int class_num)
 {
     // dataset is either "train" or "t10k"
-    std::string image_data_path = dataset + "-images.idx3-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(pixels_length) + ".txt";
-    std::string label_data_path = dataset + "-labels.idx1-ubyte_sample_True." + std::to_string(batch_size) + "." + std::to_string(class_num) + ".txt";
+    std::string image_data_path = dataset + "-images.idx3-ubyte_sample_False." + std::to_string(batch_size) + "." + std::to_string(pixels_length) + ".txt";
+    std::string label_data_path = dataset + "-labels.idx1-ubyte_sample_False." + std::to_string(batch_size) + "." + std::to_string(class_num) + ".txt";
     float *host_image = loadArrayFromFile(image_data_path.c_str(), batch_size, pixels_length);
     //normalize image to [0, 1] interval
     for (int i = 0; i < batch_size * pixels_length; i++)
@@ -471,9 +471,9 @@ void debugPrintMatrix(float *d_m, int dim1, int dim2, std::string matrix_name)
 int main()
 {
     // train batch size
-    int batch_size = 6000;
+    int batch_size = 60000;
     // test batch size
-    int test_batch_size = 1000;
+    int test_batch_size = 10000;
     // Image pixels
     int pixel_len = 28 * 28;
     // Number of classes
